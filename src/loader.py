@@ -1,10 +1,11 @@
 import os
 import scipy.io
 import mne
+import numpy as np
 
 
 class SEEDLoader:
-    def __init__(self, data_dir, label_file, sfreq=200, channels=None):
+    def __init__(self, data_dir, label_file, sfreq=200, channels=None, window_length=20, overlap=0.5, trim_length=1):
         """
         Initialize the SEEDDataset.
 
@@ -17,6 +18,9 @@ class SEEDLoader:
         self.data_dir = data_dir
         self.labels = scipy.io.loadmat(label_file)['label'][0]
         self.sfreq = sfreq
+        self.window_length = window_length
+        self.overlap = overlap
+        self.trim_length = trim_length
         self.channels = channels or [
             'Fp1', 'Fpz', 'Fp2', 'AF3', 'AF4', 'F7', 'F5', 'F3', 'F1', 'Fz',
             'F2', 'F4', 'F6', 'F8', 'FT7', 'FC5', 'FC3', 'FC1', 'FCz', 'FC2',
@@ -28,6 +32,13 @@ class SEEDLoader:
         ]
         self.n_channels = len(self.channels)
         self.data = self.load_dataset()
+
+    def get_segments(self, data):
+        window = int(self.window_length * self.sfreq)
+        step = int(window * (1 - self.overlap))
+        result = np.lib.stride_tricks.sliding_window_view(data, window_shape=window, axis=1)[:, ::step]
+        return np.transpose(result, axes=(1,0,2))
+
 
     def load_file(self, file_path):
         """
@@ -41,21 +52,104 @@ class SEEDLoader:
         """
         info = mne.create_info(self.channels, sfreq=self.sfreq, ch_types=['eeg'] * self.n_channels)
         mat_data = scipy.io.loadmat(os.path.join(self.data_dir, file_path))
+        trim_size = self.trim_length * self.sfreq
+
+        eegs = []
 
         # 15 EEGs of the subject on this day
-        eegs = [{'raw': mne.io.RawArray(mat_data[f'djc_eeg{i+1}'] * 1e-6, info), 
-                 'label': label,
-                 'subject': int(file_path[0]),
-                 'video': i+1
-                 } 
-                 for i, label in zip(range(15), self.labels)]
+        for i, label in zip(range(15), self.labels):
+
+            # Divide each sample in smaller segments
+            key = [k for k in mat_data.keys() if k.endswith(f"_eeg{i+1}")][0]
+            segments = self.get_segments((mat_data[key] * 1e-6)[:, trim_size:-trim_size])
+
+            for segment in segments:
+                eegs.append({'raw': mne.io.RawArray(segment, info), 
+                             'label': label,
+                             'subject': int(file_path[0]),
+                             'video': i+1
+                            })
+
         return eegs
 
     def load_dataset(self):
         all_eegs = []
+        # mat_files = ['10_20131130.mat', '10_20131204.mat']
         mat_files = [f for f in os.listdir(self.data_dir) 
                      if f.endswith('.mat') and not f.startswith('label')]
         
         for mat_file in mat_files:
           all_eegs.extend(self.load_file(mat_file))
         return all_eegs
+
+
+
+
+# class TUHLoader:
+#     def __init__(self, data_dir, label_file, sfreq=250, channels=None, window_length=20, overlap=0.5, trim_length=1):
+#         """
+#         Initialize the SEEDDataset.
+
+#         Parameters:
+#         - data_dir: str, directory containing the .mat files.
+#         - label_file: str, path to the label.mat file.
+#         - sfreq: float, sampling frequency of the EEG data.
+#         - channels: list of str, names of EEG channels.
+#         """
+#         self.data_dir = data_dir
+#         self.sfreq = sfreq
+#         self.window_length = window_length
+#         self.overlap = overlap
+#         self.trim_length = trim_length
+#         self.channels = channels or [...
+#                                      ...
+#         ]
+#         self.n_channels = len(self.channels)
+#         self.data = self.load_dataset()
+
+#     def get_segments(self, data):
+#         window = int(self.window_length * self.sfreq)
+#         step = int(window * (1 - self.overlap))
+#         result = np.lib.stride_tricks.sliding_window_view(data, window_shape=window, axis=1)[:, ::step]
+#         return np.transpose(result, axes=(1,0,2))
+
+
+#     def load_file(self, file_path):
+#         """
+#         Load all EEG signals and their labels from a single .mat file.
+
+#         Parameters:
+#         - file_path: str, path to the .mat file.
+
+#         Returns:
+#         - data: list of dicts, each containing 'raw' and 'label'.
+#         """
+#         info = mne.create_info(self.channels, sfreq=self.sfreq, ch_types=['eeg'] * self.n_channels)
+#         mat_data = scipy.io.loadmat(os.path.join(self.data_dir, file_path))
+#         trim_size = self.trim_length * self.sfreq
+
+#         eegs = []
+
+#         # 15 EEGs of the subject on this day
+#         for i, label in zip(range(15), self.labels):
+
+#             # Divide each sample in smaller segments
+#             segments = self.get_segments((mat_data[f'djc_eeg{i+1}'] * 1e-6)[:, trim_size:-trim_size])
+
+#             for segment in segments:
+#                 eegs.append({'raw': mne.io.RawArray(segment, info), 
+#                              'label': label,
+#                              'subject': int(file_path[0]),
+#                              'video': i+1
+#                             })
+
+#         return eegs
+
+#     def load_dataset(self):
+#         all_eegs = []
+#         mat_files = [f for f in os.listdir(self.data_dir) 
+#                      if f.endswith('.mat') and f.startswith('1_') and not f.startswith('label')]
+        
+#         for mat_file in mat_files:
+#           all_eegs.extend(self.load_file(mat_file))
+#         return all_eegs
