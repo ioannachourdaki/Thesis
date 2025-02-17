@@ -20,14 +20,48 @@ def relative_energy(signal, band, **kwargs):
 
 
 # mean - Instantaneous Amplitude/Frequency Modulation
-def mIM(signal, **kwargs):
+def MIA(signal, **kwargs):
   window = int(kwargs.get('window', 200))
   overlap = kwargs.get('overlap', 0.5)
 
   # step = window - (window * overlap)
   step = int(window * (1 - overlap))
-  return np.lib.stride_tricks.sliding_window_view(signal,
-                                                  window_shape=window)[::step].mean(axis=1)
+  return np.nanmean(np.lib.stride_tricks.sliding_window_view(signal,
+                                                             window_shape=window)[::step], 
+                                                             axis=1)
+
+
+def MIF(signalAmpl, signalFreq, **kwargs):
+  window = int(kwargs.get('window', 200))
+  overlap = kwargs.get('overlap', 0.5)
+
+  # step = window - (window * overlap)
+  step = int(window * (1 - overlap))
+
+  instantAmpl = np.lib.stride_tricks.sliding_window_view(signalAmpl,
+                                                  window_shape=window)[::step]
+  instantFreq = np.lib.stride_tricks.sliding_window_view(signalFreq,
+                                                  window_shape=window)[::step]
+  
+  weightedFreq = np.nansum(instantFreq * (instantAmpl ** 2), axis=1)
+  sqAmpl = np.nansum(instantAmpl ** 2, axis=1)
+  MIFweighted = weightedFreq / sqAmpl
+  # Exclude divisionByZero
+  zeroAmplIdx = (sqAmpl == 0)
+  MIFweighted[zeroAmplIdx] = 0
+  return MIFweighted
+
+
+# varience - Inst. Frequency Modulation
+def VIF(signal, **kwargs):
+  window = int(kwargs.get('window', 200))
+  overlap = kwargs.get('overlap', 0.5)
+
+  # step = window - (window * overlap)
+  step = int(window * (1 - overlap))
+  return np.nanvar(np.lib.stride_tricks.sliding_window_view(signal,
+                                                             window_shape=window)[::step], 
+                                                             axis=1)
 
 
 # Higuchi Fractal Dimension
@@ -84,6 +118,12 @@ def apply_feature(method, raw, **kwargs):
     return np.array([method(raw, band, **kwargs)
                      for band in freq_bands.keys()])
 
+  if method == MIF:
+    return np.array([np.array([method(signalAmpl, signalFreq, **kwargs) 
+                              for (signalAmpl, signalFreq) 
+                              in zip(raw['envelope'][band].get_data(), raw['freq'][band].get_data())])
+                     for band in freq_bands.keys()])
+
   return np.array([np.array([method(signal, **kwargs) 
                              for signal in raw[band].get_data()])
                   for band in freq_bands.keys()])
@@ -96,10 +136,13 @@ def feature_extractor(tkeo_raw, features, **kwargs):
     feat_list.append(apply_feature(relative_energy, tkeo_raw['signal'], **kwargs))
 
   if 'mean_iam' in features:
-    feat_list.append(apply_feature(mIM, tkeo_raw['envelope'], **kwargs))
+    feat_list.append(apply_feature(MIA, tkeo_raw['envelope'], **kwargs))
 
   if 'mean_ifm' in features:
-    feat_list.append(apply_feature(mIM, tkeo_raw['freq'], **kwargs))
+    feat_list.append(apply_feature(MIF, tkeo_raw, **kwargs))
+
+  if 'var_ifm' in features:
+    feat_list.append(apply_feature(VIF, tkeo_raw['freq'], **kwargs))
   
   if 'hfd' in features:
     feat_list.append(apply_feature(hfd, tkeo_raw['signal'], **kwargs))
@@ -111,13 +154,13 @@ def feature_extractor(tkeo_raw, features, **kwargs):
         }
 
 
-def feature_extraction(dataset, features, algorithm, filterType='gabor', 
+def feature_extraction(dataset, features, DESA, filterType='gabor', 
                        choose_fc='mean', **kwargs,):
   feature_matrix = []
 
   for signal in dataset.data:
     raw_bands = apply_band_filtering(signal['raw'], filterType, choose_fc)
-    tkeo_raw = apply_tkeo_to_eeg(raw_bands, algorithm)
+    tkeo_raw = apply_tkeo_to_eeg(raw_bands, DESA)
     feature_matrix.append(feature_extractor(tkeo_raw, features, **kwargs))
 
   return np.array(feature_matrix)
