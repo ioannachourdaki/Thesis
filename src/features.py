@@ -1,22 +1,25 @@
 from src.tkeo import apply_tkeo_to_eeg
 from src.utils import apply_band_filtering, freq_bands
 import numpy as np
+from tqdm import tqdm
 
 # Relative Energy: RE_freqband = E_freqband / E_total
-def relative_energy(signal, band, **kwargs):
+def relative_energy(signalBands, **kwargs):
   mode = kwargs.get('mode', 'linear')
 
-  band_signal = signal[band].get_data()
-  all_signal = (signal['Delta'].get_data() + signal['Theta'].get_data() +
-                signal['Alpha'].get_data() + signal['Beta'].get_data() +
-                signal['Gamma'].get_data())
-
   if mode == 'linear':
-    return band_signal / all_signal
+    ratio = signalBands / np.sum(signalBands, axis=0)
   elif mode == 'log':
-    return np.log10(band_signal / all_signal)
+    ratio = np.log10(signalBands / np.sum(signalBands, axis=0))
   else:
     raise ValueError(f"Invalid mode: {mode}")
+
+  # Handle timeframes where all bands are 0 -> sum(bands) = 0
+  zeroIdx = np.argwhere(np.isnan(ratio))
+  for idx in zeroIdx:
+    ratio[tuple(idx)] = 0
+
+  return ratio
 
 
 # mean - Instantaneous Amplitude/Frequency Modulation
@@ -26,9 +29,9 @@ def MIA(signal, **kwargs):
 
   # step = window - (window * overlap)
   step = int(window * (1 - overlap))
-  return np.nanmean(np.lib.stride_tricks.sliding_window_view(signal,
-                                                             window_shape=window)[::step], 
-                                                             axis=1)
+  windows = np.lib.stride_tricks.sliding_window_view(signal, window_shape=window, axis=-1)
+  windows = windows[:, :, ::step, :]
+  return np.nanmean(windows, axis=-1)
 
 
 def MIF(signalAmpl, signalFreq, **kwargs):
@@ -38,17 +41,18 @@ def MIF(signalAmpl, signalFreq, **kwargs):
   # step = window - (window * overlap)
   step = int(window * (1 - overlap))
 
-  instantAmpl = np.lib.stride_tricks.sliding_window_view(signalAmpl,
-                                                  window_shape=window)[::step]
-  instantFreq = np.lib.stride_tricks.sliding_window_view(signalFreq,
-                                                  window_shape=window)[::step]
+  windows = np.lib.stride_tricks.sliding_window_view(signalAmpl, window_shape=window, axis=-1)
+  instantAmpl = windows[:,:, ::step, :]
+  windows = np.lib.stride_tricks.sliding_window_view(signalFreq, window_shape=window, axis=-1)
+  instantFreq = windows[:,:, ::step, :]
   
-  weightedFreq = np.nansum(instantFreq * (instantAmpl ** 2), axis=1)
-  sqAmpl = np.nansum(instantAmpl ** 2, axis=1)
+  weightedFreq = np.nansum(instantFreq * (instantAmpl ** 2), axis=-1)
+  sqAmpl = np.nansum(instantAmpl ** 2, axis=-1)
   MIFweighted = weightedFreq / sqAmpl
   # Exclude divisionByZero
-  zeroAmplIdx = (sqAmpl == 0)
-  MIFweighted[zeroAmplIdx] = 0
+  zeroAmplIdx = np.argwhere(sqAmpl == 0)
+  for idx in zeroAmplIdx:
+    MIFweighted[tuple(idx)] = 0
   return MIFweighted
 
 
@@ -59,9 +63,9 @@ def VIF(signal, **kwargs):
 
   # step = window - (window * overlap)
   step = int(window * (1 - overlap))
-  return np.nanvar(np.lib.stride_tricks.sliding_window_view(signal,
-                                                             window_shape=window)[::step], 
-                                                             axis=1)
+  windows = np.lib.stride_tricks.sliding_window_view(signal, window_shape=window, axis=-1)
+  windows = windows[:,:, ::step, :]
+  return np.nanvar(windows, axis=-1)
 
 
 # Higuchi Fractal Dimension
@@ -112,55 +116,41 @@ def hfd(signal, **kwargs):
   return np.array([hfd_core(segment, kmax) for segment in segments])
 
 
-def apply_feature(method, raw, **kwargs):
-
-  if method == relative_energy:
-    return np.array([method(raw, band, **kwargs)
-                     for band in freq_bands.keys()])
-
-  if method == MIF:
-    return np.array([np.array([method(signalAmpl, signalFreq, **kwargs) 
-                              for (signalAmpl, signalFreq) 
-                              in zip(raw['envelope'][band].get_data(), raw['freq'][band].get_data())])
-                     for band in freq_bands.keys()])
-
-  return np.array([np.array([method(signal, **kwargs) 
-                             for signal in raw[band].get_data()])
-                  for band in freq_bands.keys()])
+def apply_feature(method, signalBands, **kwargs):
+  return np.array([np.array([method(signalChannel, **kwargs) for signalChannel in signalBand])
+                  for signalBand in signalBands])
 
 
 def feature_extractor(tkeo_raw, features, **kwargs):
   feat_list = []
   
   if 'rel_energy' in features:
-    feat_list.append(apply_feature(relative_energy, tkeo_raw['signal'], **kwargs))
+    feat_list.append(relative_energy(tkeo_raw[:,0], **kwargs))
 
   if 'mean_iam' in features:
-    feat_list.append(apply_feature(MIA, tkeo_raw['envelope'], **kwargs))
+    feat_list.append(MIA(tkeo_raw[:,2], **kwargs))
 
   if 'mean_ifm' in features:
-    feat_list.append(apply_feature(MIF, tkeo_raw, **kwargs))
+    feat_list.append(MIF(tkeo_raw[:,2], tkeo_raw[:,3], **kwargs))
 
   if 'var_ifm' in features:
-    feat_list.append(apply_feature(VIF, tkeo_raw['freq'], **kwargs))
+    feat_list.append(VIF(tkeo_raw[:,3], **kwargs))
   
   if 'hfd' in features:
-    feat_list.append(apply_feature(hfd, tkeo_raw['signal'], **kwargs))
-  
-  return {
-          band: feat_array
-          for band, feat_array in zip(freq_bands.keys(), 
-                                      np.concatenate(feat_list, axis=2))
-        }
+    feat_list.append(apply_feature(hfd, tkeo_raw[:,0], **kwargs))
+
+  return np.concatenate(feat_list, axis=2)
 
 
 def feature_extraction(dataset, features, DESA, filterType='gabor', 
-                       choose_fc='mean', **kwargs,):
+                       choose_fc='mean', BinFil=True, filterNo=12, **kwargs):
   feature_matrix = []
 
-  for signal in dataset.data:
-    raw_bands = apply_band_filtering(signal['raw'], filterType, choose_fc)
-    tkeo_raw = apply_tkeo_to_eeg(raw_bands, DESA)
-    feature_matrix.append(feature_extractor(tkeo_raw, features, **kwargs))
+  for signal in tqdm(dataset.data, desc="Feature Matrix Extraction"):
+    raw_bands = apply_band_filtering(signal['raw'], filterType, choose_fc, filterNo)
+    tkeo_raw = apply_tkeo_to_eeg(raw_bands, DESA, BinFil)
+    feature_matrix.append({'feat': feature_extractor(tkeo_raw, features, **kwargs),
+                           'label': signal['label'],
+                           'subject': signal['subject']})
 
   return np.array(feature_matrix)
