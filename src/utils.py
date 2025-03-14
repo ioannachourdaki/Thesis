@@ -7,36 +7,43 @@ import matplotlib.pyplot as plt
 import math
 from scipy.signal import convolve
 from scipy.fft import fft, fftfreq
+from scipy.signal import fftconvolve
+from mne.filter import filter_data
 
 
 freq_bands = {"Delta": (0.5, 3),
               "Theta": (4, 7),
               "Alpha": (8, 12),
               "Beta": (13, 30),
-              "Gamma": (30, 50)}
+              "Gamma": (30, 50),
+              "All": (0, 60)}
 
 
-def find_peak_frequency_in_band(signals, fs, f_low, f_high, choose_fc):
+def z_score(data):
+    return (data - np.mean(data, axis=-1, keepdims=True)) / np.std(data, axis=-1, keepdims=True)
+    
+
+def find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, choose_fc):
     """
     Finds the mean frequency of the top 10% (90th percentile) of the FFT amplitude values
     within a specified frequency band.
 
     Parameters:
         signals: The EEG raw numpy data.
-        fs (float): Sampling frequency of the EEG signal.
-        f_low (float): Lower bound of the frequency band.
-        f_high (float): Upper bound of the frequency band.
+        sfreq (float): Sampling frequency of the EEG signal.
+        l_freq (float): Lower bound of the frequency band.
+        h_freq (float): Upper bound of the frequency band.
 
     Returns:
         float: Mean frequency of the top 10% amplitude values in the FFT within the given band.
     """
 
     # Compute FFT and frequencies
-    freq = fftfreq(signals.shape[1], d=1/fs)
+    freq = fftfreq(signals.shape[1], d=1/sfreq)
     fft_vals = np.abs(fft(signals, axis=1))
 
     # Select only the frequencies within the desired band
-    band_mask = (freq >= f_low) & (freq <= f_high)
+    band_mask = (freq >= l_freq) & (freq <= h_freq)
     band_freqs = freq[band_mask]
     band_fft_vals = fft_vals[:, band_mask]
 
@@ -59,81 +66,77 @@ def find_peak_frequency_in_band(signals, fs, f_low, f_high, choose_fc):
       raise ValueError(f"Invalid fc calculation: {choose_fc}")
 
 
-def gabor_filter(t,fc,a):
-    gabor = np.exp(-a**2 * t**2) * np.cos(2 * np.pi * fc * t)
-    return gabor / np.sum(np.abs(gabor))
+def gaborfilt(signal, centerFreq, alpha, samplingFreq):
+    beta = alpha / samplingFreq
+    centerOmega = 2 * np.pi * centerFreq / samplingFreq
+
+    N = int(np.ceil((3 / beta) + 1))
+
+    n = np.arange(-N, N + 1)
+    g = np.exp(-(beta * n) ** 2)
+    g /= np.sqrt(sum(g**2))
+    filterResponse = g * np.cos(n * centerOmega)
+    return fftconvolve(signal, filterResponse, mode='same')
 
 
-def band_filtering(raw, f_low, f_high, filterType, choose_fc, window=1):
-
-    if filterType == 'gabor':
-
-      # Time vector for the Gabor filter
-      fs = raw.info['sfreq']
-      t = np.arange(-window, window, 1/fs)
-
-      signals = raw.get_data()
-
-      # Central frequency
-      fc = find_peak_frequency_in_band(signals, fs, f_low, f_high, choose_fc)
-      bandwidth = f_high - f_low
-
-      if choose_fc == 'channel_max':
-        filtered_signals = [np.convolve(signal, 
-                                        gabor_filter(t, channel_fc, bandwidth), 
-                                        mode='same')
-                            for signal, channel_fc in zip(signals, fc)]
-
-      else:
-        filtered_signals = [np.convolve(signal, 
-                                        gabor_filter(t, fc, bandwidth), 
-                                        mode='same') 
-                            for signal in signals]
-
-      return mne.io.RawArray(np.array(filtered_signals), raw.info)
-
-
-    elif filterType == 'fir':
-     return raw.copy().filter(
-                              l_freq=f_low,
-                              h_freq=f_high,
-                              l_trans_bandwidth=0.5,
-                              h_trans_bandwidth=0.5,
-                              method='fir',
-                              fir_window='hamming'
-                              )
+def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filterNo, window=1):
+    if filterType == 'fir':
+     return filter_data(signals,
+                        sfreq=sfreq,
+                        l_freq=l_freq,
+                        h_freq=h_freq,
+                        l_trans_bandwidth=0.5,
+                        h_trans_bandwidth=0.5,
+                        method='fir',
+                        fir_window='hamming',
+                        verbose=False
+                        )
 
 
     elif filterType == 'cheby2':
-      return raw.copy().filter(
-                              l_freq=f_low,
-                              h_freq=f_high,
-                              l_trans_bandwidth=0.5,
-                              h_trans_bandwidth=0.5,
-                              method='iir',
-                              iir_params={'order': 10, 'ftype': 'cheby2', 'rs': 30}
-                              )
+      return filter_data(signals,
+                         sfreq=sfreq,
+                         l_freq=l_freq,
+                         h_freq=h_freq,
+                         l_trans_bandwidth=0.5,
+                         h_trans_bandwidth=0.5,
+                         method='iir',
+                         iir_params={'order': 10, 'ftype': 'cheby2', 'rs': 30},
+                         verbose=False
+                         )
 
 
     elif filterType == 'butter':
-      return raw.copy().filter(
-                              l_freq=f_low,
-                              h_freq=f_high,
-                              l_trans_bandwidth=0.5,
-                              h_trans_bandwidth=0.5,
-                              method='iir',
-                              iir_params={'order': 10, 'ftype': 'butter'}
-                              )
+      return filter_data(signals,
+                         sfreq=sfreq,
+                         l_freq=l_freq,
+                         h_freq=h_freq,
+                         l_trans_bandwidth=0.5,
+                         h_trans_bandwidth=0.5,
+                         method='iir',
+                         iir_params={'order': 10, 'ftype': 'butter'},
+                         verbose=False
+                         )
 
 
-    # elif filterType == 'filterbanks':
+    elif filterType == 'gabor':
+      fc = find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, 'max')
+      return np.array([gaborfilt(signal, fc, alpha, sfreq) for signal in signals])
+
+
+    elif filterType == 'filterbanks':
+      alpha = h_freq - l_freq
+      step_freq = alpha / (filterNo - 1)
+      range_freq = np.arange(l_freq, h_freq, step_freq)
+
+      return np.array([[gaborfilt(signal, fc, alpha, sfreq)
+                          for fc in range_freq]
+                        for signal in signals])
 
     else:
       raise ValueError(f"Invalid filter type: {filterType}")
 
 
-def apply_band_filtering(raw, filterType, choose_fc):
-    return {
-            band: band_filtering(raw, fmin, fmax, filterType, choose_fc)
-            for band, (fmin, fmax) in freq_bands.items()
-          }
+def apply_band_filtering(raw, filterType, choose_fc, filterNo):
+    return np.array([band_filtering(raw.get_data(), raw.info['sfreq'], l_freq, h_freq, filterType, choose_fc, filterNo)
+            for band, (l_freq, h_freq) in freq_bands.items()])
