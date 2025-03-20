@@ -10,34 +10,35 @@ from src.classifier import classifier
 import pickle
 
 
-dataset_name = "deap"
+dataset_name = "seed"
+DESA = "desa1"
 filterType = "filterbanks"
 window_duration = 3 # in seconds
+filterNo = 12
 
 if dataset_name == "seed":
-      dataset = SEEDLoader('/gpu-data3/ixour/seed', '/gpu-data3/ixour/seed/label.mat')
+      dataset = SEEDLoader('/gpu-data3/ixour/seed', '/gpu-data3/ixour/seed/label.mat', idx=idx)
 elif dataset_name == "tuh":
-      dataset = TUHLoader('/gpu-data3/ixour/tuh/00_epilepsy', '/gpu-data3/ixour/tuh/01_no_epilepsy')
+      dataset = TUHLoader('/gpu-data3/ixour/tuh/00_epilepsy/', '/gpu-data3/ixour/tuh/01_no_epilepsy/', preprocessed=True)
 elif dataset_name == "deap":
       dataset = DEAPLoader('/gpu-data3/ixour/deap/data_preprocessed')
 elif dataset_name == "bci":
-      dataset = BCILoader("/gpu-data3/ixour/bci")
+      dataset = BCILoader("/gpu-data3/ixour/bci", preprocessed=True)
 
 
 features = ['mean_iam', 'mean_ifm','var_ifm']
-# features = ['mean_iam']
 
 kwargs = {'window': window_duration * dataset.sfreq,
           'overlap': 0.5,
           'mode': 'linear'}
 
-feature_matrix = feature_extraction(dataset, features, 'desa1', filterType=filterType, **kwargs)
+feature_matrix = feature_extraction(dataset, features, DESA, filterType=filterType, filterNo=filterNo, **kwargs)
 print(feature_matrix.shape, feature_matrix[0]['feat'].shape)
 
-np.save(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{filterType}_{window_duration}s.npy", feature_matrix)
-
-
-# feature_matrix = np.load(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{filterType}_{window_duration}s.npy", allow_pickle=True)
+if filterType == "filterbanks":
+      np.save(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{DESA}_{filterNo}-{filterType}_{window_duration}s_{idx}.npy", feature_matrix)
+else:
+      np.save(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{DESA}-{filterType}_{window_duration}s_{idx}.npy", feature_matrix)
 
 
 Check for NaN values
