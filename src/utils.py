@@ -5,6 +5,8 @@ import numpy as np
 import scipy.io
 import matplotlib.pyplot as plt
 import math
+from collections import defaultdict
+import random
 from scipy.signal import convolve
 from scipy.fft import fft, fftfreq
 from scipy.signal import fftconvolve
@@ -66,6 +68,11 @@ def find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, choose_fc):
       raise ValueError(f"Invalid fc calculation: {choose_fc}")
 
 
+def gabor_filter(t,fc,a):
+    gabor = np.exp(-a**2 * t**2) * np.cos(2 * np.pi * fc * t)
+    return gabor / np.sum(np.abs(gabor))
+
+
 def gaborfilt(signal, centerFreq, alpha, samplingFreq):
     beta = alpha / samplingFreq
     centerOmega = 2 * np.pi * centerFreq / samplingFreq
@@ -80,7 +87,27 @@ def gaborfilt(signal, centerFreq, alpha, samplingFreq):
 
 
 def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filterNo, window=1):
-    if filterType == 'fir':
+    if filterType == 'gabor2':
+
+      # Time vector for the Gabor filter
+      t = np.arange(-window, window, 1/sfreq)
+
+      # Central frequency
+      fc = find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, choose_fc)
+      alpha = h_freq - l_freq
+
+      if choose_fc == 'channel_max':
+        filtered_signals = [np.convolve(signal, gabor_filter(t, channel_fc, alpha), mode='same')
+                            for signal, channel_fc in zip(signals, fc)]
+
+      else:
+        filtered_signals = [np.convolve(signal, gabor_filter(t, fc, alpha), mode='same') 
+                            for signal in signals]
+
+      return np.array(filtered_signals)
+
+
+    elif filterType == 'fir':
      return filter_data(signals,
                         sfreq=sfreq,
                         l_freq=l_freq,
@@ -121,6 +148,7 @@ def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filter
 
     elif filterType == 'gabor':
       fc = find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, 'max')
+      alpha = h_freq - l_freq
       return np.array([gaborfilt(signal, fc, alpha, sfreq) for signal in signals])
 
 
@@ -140,3 +168,88 @@ def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filter
 def apply_band_filtering(raw, filterType, choose_fc, filterNo):
     return np.array([band_filtering(raw.get_data(), raw.info['sfreq'], l_freq, h_freq, filterType, choose_fc, filterNo)
             for band, (l_freq, h_freq) in freq_bands.items()])
+
+
+### For TUH Dataset ###
+
+def select_balanced_files(epilepsy_dir, exclude_files, N):
+  """
+    For TUH Dataset, finds the closest to equally distributed files so that epilepsy and no-epilepsy files are of the same size.
+    
+    This function selects exactly N files from different subjects, ensuring the most even distribution possible.
+    If subjects have varying numbers of files, the selection is adjusted to maintain balance.
+    
+    Parameters:
+    - epilepsy_dir (str): Path to the directory containing epilepsy files.
+    - N (int): Total number of files to select.
+
+    Returns:
+    - selected_files (list): List of selected file paths.
+    - subject_counts (dict): Dictionary with the count of selected files per subject.
+    """
+
+  # List all files
+  epilepsy_files = [os.path.join(epilepsy_dir, f) for f in os.listdir(epilepsy_dir)]
+  epilepsy_files = [file for i,file in enumerate(epilepsy_files) if i not in exclude_files]
+  
+  # Group files by subject
+  subject_files = defaultdict(list)
+  for file in epilepsy_files:
+      subject = os.path.basename(file)[:8]  # Extract subject ID
+      subject_files[subject].append(file)
+  
+  # Sort subjects by file count (helps with fair distribution)
+  subjects_sorted = sorted(subject_files.keys(), key=lambda s: len(subject_files[s]), reverse=True)
+
+  # Compute ideal distribution
+  num_subjects = len(subject_files)
+  base_quota = N // num_subjects  # Minimum number of files per subject
+  extra_files = N % num_subjects   # Remaining files to distribute
+
+  selected_files = []
+  subject_counts = {}
+
+  # First, assign the base quota to each subject
+  for subject in subjects_sorted:
+      files = subject_files[subject]
+      random.shuffle(files)  # Shuffle to ensure randomness
+      take_count = min(base_quota, len(files))
+      selected_files.extend(files[:take_count])
+      subject_counts[subject] = take_count
+
+  # Distribute remaining files as fairly as possible
+  remaining_slots = N - len(selected_files)
+  available_subjects = [s for s in subjects_sorted if len(subject_files[s]) > subject_counts[s]]
+
+  while remaining_slots > 0 and available_subjects:
+      subject = available_subjects.pop(0)  # Take a subject with remaining files
+      files_left = subject_files[subject][subject_counts[subject]:]  # Get unselected files
+      if files_left:
+          selected_files.append(files_left[0])  # Add one more file from this subject
+          subject_counts[subject] += 1
+          remaining_slots -= 1
+          if len(files_left) > 1:
+              available_subjects.append(subject)  # Put it back for another round
+
+  return list(set(selected_files)), subject_counts
+
+
+def apply_ica(raw):
+  ica = mne.preprocessing.ICA(method='fastica', max_iter=1000, random_state=42, verbose=False)
+  ica.fit(raw, verbose=False)  
+
+  # Find EOG artifacts
+  eog_picks = mne.pick_types(raw.info, eog=True)
+  if len(eog_picks) > 0:
+    inds, scores = ica.find_bads_eog(raw, verbose=False)
+  # Find ECG artifacts
+  ecg_picks = mne.pick_types(raw.info, ecg=True)
+  if len(ecg_picks) > 0:
+    inds, scores = ica.find_bads_ecg(raw, ch_name='EKG', method='correlation', verbose=False)
+
+  # Remove identified artifact components
+  ica.exclude = inds
+  # Apply ICA to clean EEG data
+  ica.apply(raw, verbose=False)
+  # Remove EKG channel
+  return raw.pick_types(eeg=True, verbose=False)
