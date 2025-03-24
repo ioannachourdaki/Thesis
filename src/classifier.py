@@ -7,6 +7,10 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import StratifiedKFold, GroupKFold, cross_val_score
+from tqdm import tqdm
+import warnings
+
+warnings.simplefilter(action='ignore', category=UserWarning)
 
 
 def classifier(X, y, modelType, test_size=0.2):
@@ -33,10 +37,7 @@ def classifier(X, y, modelType, test_size=0.2):
     return np.column_stack((y_test, y_pred)), accuracy_score(y_test, y_pred)
 
 
-def cross_validation(X, y, modelType, groups=None):
-    N = X.shape[0]
-    X_reshaped = X.reshape(N, -1)
-
+def cross_validation(X, y, modelType, band, subjects=None):
     if modelType == "svm":
         model = make_pipeline(StandardScaler(), SVC(kernel='rbf', C=1.0))
 
@@ -49,15 +50,38 @@ def cross_validation(X, y, modelType, groups=None):
     else:
         raise ValueError(f"Invalid modelType: {modelType}. Choose from 'svm', 'knn', or 'quadratic'.")
 
-    # Perform 5-fold cross-validation
-    if groups == None: # Subject-Dependent task
-        cv = StratifiedKFold(n_splits=5, shuffle=True)
-    else: # Subject-Independent task
-        cv = GroupKFold(n_splits=5)
-    
-    cv_scores = cross_val_score(model, X_reshaped, y, cv=cv, groups=groups, scoring='accuracy')
+    skf = StratifiedKFold(n_splits=5, shuffle=True)
 
-    return np.mean(cv_scores), np.var(cv_scores)
+    # Perform 5-fold cross-validation
+    if subjects is None: # Subject-Dependent task
+        for _ in tqdm(range(1), desc=f"{band} Band 5-Fold Cross Validation"):
+            cv_scores = cross_val_score(model, X.reshape(X.shape[0], -1), y, cv=cv, scoring='accuracy')
+
+    else: # Subject-Independent task
+        cv_scores = []
+        unique_subjects = np.unique(subjects)
+
+        for (train_idx, test_idx) in tqdm(skf.split(unique_subjects, [y[subjects == s][0] for s in unique_subjects]),
+                                                total=5, desc=f"{band} Band 5-Fold Cross Validation"):
+
+            train_subjects = unique_subjects[train_idx]
+            test_subjects = unique_subjects[test_idx]
+
+            mask_train = np.isin(subjects, train_subjects)
+            mask_test = np.isin(subjects, test_subjects)
+
+            # Extract features and labels
+            X_train = X[mask_train].reshape(mask_train.sum(), -1)
+            y_train = y[mask_train]
+            X_test = X[mask_test].reshape(mask_test.sum(), -1)
+            y_test = y[mask_test]
+
+            model.fit(X_train, y_train)
+            y_pred = model.predict(X_test)
+            accuracy = accuracy_score(y_test, y_pred)
+            cv_scores.append(accuracy)
+
+    return round(np.mean(cv_scores), 3), round(np.var(cv_scores), 3)
 
 
 def subject_dependent_crossval(feature_matrix, targetType, modelType, show_crossval):
@@ -68,17 +92,17 @@ def subject_dependent_crossval(feature_matrix, targetType, modelType, show_cross
 
     subjects = set(sample['subject'] for sample in feature_matrix)
 
-    for band in range(6):
+    for i, band in enumerate(['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma', 'All']):
         for subject in subjects:
             subject_data = [sample for sample in feature_matrix if sample['subject'] == subject]
-            X = np.array([sample['feat'][band] for sample in subject_data])
+            X = np.array([sample['feat'][i] for sample in subject_data])
            
             if targetType == "valence_arousal":
                 y_valence = (np.array([sample['label'][0] for sample in subject_data]) > 5).astype(int)
-                y_arousal = (np.array([sample['label'][1] for sample in subject_data]) > 5).astype(int) 
+                y_arousal = (np.array([sample['label'][1] for sample in subject_data]) > 5).astype(int)
 
-                mean_score_valence, var_score_valence = cross_validation(X, y_valence, modelType)
-                mean_score_arousal, var_score_arousal = cross_validation(X, y_arousal, modelType)
+                mean_score_valence, var_score_valence = cross_validation(X, y_valence, modelType, band+" Valence")
+                mean_score_arousal, var_score_arousal = cross_validation(X, y_arousal, modelType, band+" Arousal")
 
                 scores_valence.append(mean_score_valence)
                 scores_arousal.append(mean_score_arousal)
@@ -90,7 +114,7 @@ def subject_dependent_crossval(feature_matrix, targetType, modelType, show_cross
         
             elif targetType == "single":
                 y = np.array([sample['label'] for sample in subject_data])
-                mean_score, var_score = cross_validation(X, y, modelType)
+                mean_score, var_score = cross_validation(X, y, modelType, band)
                 scores_target.append(mean_score)
 
                 if show_crossval:
@@ -102,51 +126,53 @@ def subject_dependent_crossval(feature_matrix, targetType, modelType, show_cross
 
         if targetType == "valence_arousal":
             # Average subject-dependent accuracy across all subjects
-            subject_scores.append([np.mean(scores_valence), np.mean(scores_arousal)])
+            subject_scores.append([round(np.mean(scores_valence), 3), round(np.mean(scores_arousal), 3)])
         else:
             # Average subject-dependent accuracy across all subjects
-            subject_scores.append(np.mean(scores_target))
+            subject_scores.append(round(np.mean(scores_target), 3))
     
     return subject_scores
-        # print(f"\nAverage Subject-Dependent Valence-Arousal Accuracy: "
-            # f"{np.round(avg_score_valence * 100, 3)}%-{np.round(avg_score_arousal * 100, 3)}%")
 
 
-def subject_independent_crossval(feature_matrix, targetType, modelType, show_crossval):
+def subject_independent_crossval(dataset, targetType, modelType, show_crossval):
+
     scores_target = []
 
-    groups = np.array([sample['subject'] for sample in feature_matrix])
-
-    for band in range(6):
-        X = np.array([sample['feat'][band] for sample in subject_data])
+    subjects = np.array([sample['subject'] for sample in dataset])
+    
+    for i, band in enumerate(['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma', 'All']):
+        X = np.array([sample['feat'][i] for sample in dataset])
 
         if targetType == "valence_arousal":
-            y_valence = (np.array([sample['label'][0] for sample in subject_data]) > 5).astype(int)
-            y_arousal = (np.array([sample['label'][1] for sample in subject_data]) > 5).astype(int) 
+            labels_valence = (np.array([sample['label'][0] for sample in dataset]) > 5).astype(int)
+            labels_arousal = (np.array([sample['label'][1] for sample in dataset]) > 5).astype(int)
 
-            mean_score_valence, var_score_valence = cross_validation(X, y_valence, modelType, groups)
-            mean_score_arousal, var_score_arousal = cross_validation(X, y_arousal, modelType, groups)
+            mean_score_valence, var_score_valence = cross_validation(X, labels_valence, modelType, band+" Valence", subjects)
+            mean_score_arousal, var_score_arousal = cross_validation(X, labels_arousal, modelType, band+" Arousal", subjects)
 
             scores_target.append([mean_score_valence, mean_score_arousal])
 
             if show_crossval:
                 print(f"5-Fold Valence-Arousal Accuracy and Varience: "
-                    f"{np.round(mean_score_valence, 3)}-{np.round(mean_score_arousal, 3)}, "
-                    f"{np.round(var_score_valence, 3)}-{np.round(var_score_arousal, 3)}")
+                    f"{mean_score_valence}-{mean_score_arousal}, "
+                    f"{var_score_valence}-{var_score_arousal}")
         
         elif targetType == "single":
-            y = np.array([sample['label'] for sample in subject_data])
-            mean_score, var_score = cross_validation(X, y, modelType, groups)
+            labels = np.array([sample['label'] for sample in dataset])
+
+            mean_score, var_score = cross_validation(X, labels, modelType, band, subjects)
+
             scores_target.append(mean_score)
 
             if show_crossval:
                 print(f"5-Fold Accuracy and Varience: "
-                    f"{np.round(mean_score, 3)}, {np.round(var_score, 3)}")
+                    f"{mean_score}-{mean_score}")
         
         else:
             raise ValueError(f"Invalid targetType: {targetType}. Choose from 'single' or 'valence_arousal'.")
-
+    
     return scores_target
+        
 
 
 def crossval_classifier(feature_matrix, task, targetType, modelType, show_crossval=False):
