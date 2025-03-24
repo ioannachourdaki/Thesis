@@ -68,11 +68,6 @@ def find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, choose_fc):
       raise ValueError(f"Invalid fc calculation: {choose_fc}")
 
 
-def gabor_filter(t,fc,a):
-    gabor = np.exp(-a**2 * t**2) * np.cos(2 * np.pi * fc * t)
-    return gabor / np.sum(np.abs(gabor))
-
-
 def gaborfilt(signal, centerFreq, alpha, samplingFreq):
     beta = alpha / samplingFreq
     centerOmega = 2 * np.pi * centerFreq / samplingFreq
@@ -87,27 +82,7 @@ def gaborfilt(signal, centerFreq, alpha, samplingFreq):
 
 
 def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filterNo, window=1):
-    if filterType == 'gabor2':
-
-      # Time vector for the Gabor filter
-      t = np.arange(-window, window, 1/sfreq)
-
-      # Central frequency
-      fc = find_peak_frequency_in_band(signals, sfreq, l_freq, h_freq, choose_fc)
-      alpha = h_freq - l_freq
-
-      if choose_fc == 'channel_max':
-        filtered_signals = [np.convolve(signal, gabor_filter(t, channel_fc, alpha), mode='same')
-                            for signal, channel_fc in zip(signals, fc)]
-
-      else:
-        filtered_signals = [np.convolve(signal, gabor_filter(t, fc, alpha), mode='same') 
-                            for signal in signals]
-
-      return np.array(filtered_signals)
-
-
-    elif filterType == 'fir':
+    if filterType == 'fir':
      return filter_data(signals,
                         sfreq=sfreq,
                         l_freq=l_freq,
