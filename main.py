@@ -27,7 +27,7 @@ elif dataset_name == "bci":
       dataset = BCILoader("/gpu-data3/ixour/bci", preprocessed=True)
 
 
-features = ['mean_iam', 'mean_ifm','var_ifm']
+features = ['mean_iam', 'mean_ifm','var_ifm', 'psd']
 
 kwargs = {'window': window_duration * dataset.sfreq,
       'overlap': 0.5,
