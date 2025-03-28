@@ -116,6 +116,13 @@ def hfd(signal, **kwargs):
   return np.array([hfd_core(segment, kmax) for segment in segments])
 
 
+from scipy.signal import welch
+
+def psd(signal, **kwargs):
+  fs = int(kwargs.get('fs', 128))
+  return welch(signal, fs=fs, nperseg=fs)[1][:-1]
+
+
 def apply_feature(method, signalBands, **kwargs):
   return np.array([np.array([method(signalChannel, **kwargs) for signalChannel in signalBand])
                   for signalBand in signalBands])
@@ -142,15 +149,29 @@ def feature_extractor(tkeo_raw, features, **kwargs):
   return np.concatenate(feat_list, axis=2)
 
 
+def baseline_extractor(raw, features, **kwargs):
+  feat_list = []
+
+  if 'psd' in features:
+    feat_list.append(apply_feature(psd, raw, **kwargs))
+
+  return np.concatenate(feat_list, axis=2)
+
+
 def feature_extraction(dataset, features, DESA, filterType='gabor', 
                        choose_fc='mean', BinFil=True, filterNo=12, **kwargs):
   feature_matrix = []
+  baselines = []
 
   for signal in tqdm(dataset.data, desc="Feature Matrix Extraction"):
     raw_bands = apply_band_filtering(signal['raw'], filterType, choose_fc, filterNo)
-    tkeo_raw = apply_tkeo_to_eeg(raw_bands, DESA, BinFil)
-    feature_matrix.append({'feat': feature_extractor(tkeo_raw, features, **kwargs),
-                           'label': signal['label'],
-                           'subject': signal['subject']})
+    # tkeo_raw = apply_tkeo_to_eeg(raw_bands, DESA, BinFil)
+    # feature_matrix.append({'feat': feature_extractor(tkeo_raw, features, **kwargs),
+    #                        'label': signal['label'],
+    #                        'subject': signal['subject']})
 
-  return np.array(feature_matrix)
+    baselines.append({'feat': baseline_extractor(raw_bands, features, **kwargs),
+                      'label': signal['label'],
+                      'subject': signal['subject']})
+
+  return np.array(feature_matrix), np.array(baselines)
