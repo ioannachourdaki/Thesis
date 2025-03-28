@@ -18,9 +18,6 @@ filterNo = 12
 
 
 if dataset_name == "seed":
-      #########################################
-      ## CHANGE THE IDX IN seedLOADER + MAIN ##
-      #########################################
       dataset = SEEDLoader('/gpu-data3/ixour/seed', '/gpu-data3/ixour/seed/label.mat', idx=idx)
 elif dataset_name == "tuh":
       dataset = TUHLoader('/gpu-data3/ixour/tuh/00_epilepsy/', '/gpu-data3/ixour/tuh/01_no_epilepsy/', preprocessed=True)
