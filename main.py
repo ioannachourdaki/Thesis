@@ -6,17 +6,21 @@ from src.tuh import TUHLoader
 from src.deap import DEAPLoader
 from src.bci import BCILoader
 from src.features import feature_extraction
-from src.classifier import classifier
+from src.classifier import classifier, crossval_classifier
 import pickle
 
 
-dataset_name = "seed"
+dataset_name = "deap"
 DESA = "desa1"
 filterType = "filterbanks"
-window_duration = 3 # in seconds
+window_duration = 10 # in seconds
 filterNo = 12
 
+
 if dataset_name == "seed":
+      #########################################
+      ## CHANGE THE IDX IN seedLOADER + MAIN ##
+      #########################################
       dataset = SEEDLoader('/gpu-data3/ixour/seed', '/gpu-data3/ixour/seed/label.mat', idx=idx)
 elif dataset_name == "tuh":
       dataset = TUHLoader('/gpu-data3/ixour/tuh/00_epilepsy/', '/gpu-data3/ixour/tuh/01_no_epilepsy/', preprocessed=True)
@@ -29,10 +33,10 @@ elif dataset_name == "bci":
 features = ['mean_iam', 'mean_ifm','var_ifm']
 
 kwargs = {'window': window_duration * dataset.sfreq,
-          'overlap': 0.5,
-          'mode': 'linear'}
+      'overlap': 0.5,
+      'mode': 'linear'}
 
-feature_matrix = feature_extraction(dataset, features, DESA, filterType=filterType, filterNo=filterNo, **kwargs)
+feature_matrix, baselines = feature_extraction(dataset, features, DESA, filterType=filterType, filterNo=filterNo, **kwargs)
 print(feature_matrix.shape, feature_matrix[0]['feat'].shape)
 
 if filterType == "filterbanks":
@@ -40,50 +44,26 @@ if filterType == "filterbanks":
 else:
       np.save(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{DESA}-{filterType}_{window_duration}s_{idx}.npy", feature_matrix)
 
+targetType = "valence_arousal"
+dataset_name = "deap"
+DESA = "desa1"
+filterNo = 12
 
-Check for NaN values
-for sample in feature_matrix:
-    for i, band in enumerate(['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma']):
-        bb = sample['feat'][i]  # 2D array
-        # Find NaN indices in 2D
-        nanIdx = np.argwhere(np.isnan(bb))
-        if len(nanIdx) != 0:
-            print("NaN indices:\n", nanIdx)
-
-print("--- Feature Matrix shape ---")
-print(f"Samples: {feature_matrix.shape[0]}\n"
-      f"Bands x Channels x Features: {feature_matrix[0]['feat'].shape}")
-
-
-##############################################################################################
-###########################################  OTHER DATASETS  #################################
-
-for i, band in enumerate(['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma', 'All']):
-      print(f"----- {band} Band -----")
-      X = np.concatenate([[sample['feat'][i] for sample in feat] for feat in all_samples])
-    #   print(f"Shape: {X.shape, y.shape}")
-      results, accuracy = classifier(X, y, "svm")
-      print(f"Accuracy score: {np.round(accuracy, 5) * 100} %")
-
-
-
-##############################################################################################
-###########################################  DEAP  ###########################################
-
-all_samples = [feature_matrix]
-
-y_valence, y_arousal = np.array([sample['label'][:2] for sample in feature_matrix]).T
-y_valence = (y_valence > 5).astype(int)  
-y_arousal = (y_arousal > 5).astype(int)  
-
-for i, band in enumerate(['Delta', 'Theta', 'Alpha', 'Beta', 'Gamma', 'All']):
-      print(f"----- {band} Band -----")
-      X = np.concatenate([[sample['feat'][i] for sample in feat] for feat in all_samples])
-      results_valence, accuracy_valence = classifier(X, y_valence, "svm")
-      results_arousal, accuracy_arousal = classifier(X, y_arousal, "svm")
-      print("Accuracy score Valence-Arousal: " 
-                  f"{np.round(accuracy_valence, 5) * 100}%-{np.round(accuracy_arousal, 5) * 100}%")
-
-
-##############################################################################################
-
+for task in ["subject_independent"]:
+      for filterType in ["filterbanks", "gabor"]:
+            for window_duration in [10,3,1]:
+                  if filterType == "filterbanks":
+                        feature_matrix = np.load(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{DESA}_{filterNo}-{filterType}_{window_duration}s.npy", allow_pickle=True)
+                  else:
+                        feature_matrix = np.load(f"/gpu-data3/ixour/{dataset_name}/featureMatrices/{DESA}_{filterType}_{window_duration}s.npy", allow_pickle=True)
+                  
+                  print("-" * 100)
+                  print(f"{filterType}-{window_duration}s")
+                  print("-" * 100)
+                  
+                  multiclass = True if dataset_name == "seed" else False
+                  
+                  balanced_acc, roc_auc = crossval_classifier(feature_matrix, task, targetType, 'svm', multiclass)
+                  balanced_acc = [[float(acc) for acc in row] for row in balanced_acc]
+                  roc_auc = [[float(acc) for acc in row] for row in roc_auc]
+                  print(f"{task}\n\tBalanced Accuracy: {balanced_acc}\n\tROC-AUC: {roc_auc}")
