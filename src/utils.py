@@ -81,7 +81,7 @@ def gaborfilt(signal, centerFreq, alpha, samplingFreq):
     return fftconvolve(signal, filterResponse, mode='same')
 
 
-def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filterNo, window=1):
+def band_filtering(signals, sfreq, l_freq, h_freq, filterType, choose_fc, filterNo):
     if filterType == 'fir':
      return filter_data(signals,
                         sfreq=sfreq,
